@@ -42,8 +42,8 @@ byte speedPidChangeStatus = 0;
 // left speed PID control
 #define LEFT_SPEED_PID_MIN_OUTPUT 30
 #define LEFT_SPEED_PID_MAX_OUTPUT 256
-double leftSpeedPidKp0 = 6000;
-double leftSpeedPidKi0 = 500;
+double leftSpeedPidKp0 = 2;
+double leftSpeedPidKi0 = 0.5;
 double leftSpeedPidKd0 = 0;
 /*
 double leftSpeedPidKp1 = 0;
@@ -75,5 +75,5 @@ int rightSpeedPidSetPointDirection;
 
 //#define PID_MIN_SAMPLE_PULSES 480.0
 //#define PID_MAX_SAMPLE_PULSES 2400.0
-double minPidVel = 0.40;
-double maxPidVel = 1.40;
+//double minPidVel = 0.40;
+//double maxPidVel = 1.40;

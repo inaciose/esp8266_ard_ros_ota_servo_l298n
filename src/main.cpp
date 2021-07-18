@@ -8,15 +8,14 @@
 
 #include "pid.h"
 
-#define LED_TIMER 500
-
 // servo
 #include <Servo.h>
 Servo servo1;
-
 int servo1Angle = 90;
 int servo1PotPin = 0;
 int servo1PotRead;
+
+#define LED_TIMER 500
 
 // bridge-h
 int ENA = 15; // D8
@@ -54,7 +53,7 @@ long encoderRightPulsesTargetStart = 0;
 volatile long encoderLeftPulsesSpeedPID; // the number of pulses for PID
 volatile long encoderLeftPulsesSteeringPID; // the number of pulses for PID, must be reset at same time
 
-float wheelbase = 0.15; // meters
+float wheelbase = 0.22; // meters
 float wheelradius = 0.033; // meters
 
 // pulses per rotation
@@ -71,16 +70,13 @@ float speed = 0.0;
 // speed on second
 float speedOs = 0.0;
 
-
 int speedLastPulses = 0;
 int speedOsLastPulses = 0;
 
 // bof:ROS
 #include <ros.h>
-#include <std_msgs/String.h>
 #include <std_msgs/Int32.h>
 #include <geometry_msgs/Twist.h>
-
 
 // Set the rosserial socket server IP address
 IPAddress server(192,168,1,112);
@@ -88,12 +84,6 @@ IPAddress server(192,168,1,112);
 const uint16_t serverPort = 11411;
 
 ros::NodeHandle nh;
-
-// Make a chatter publisher
-std_msgs::String str_msg;
-ros::Publisher chatter("chatter", &str_msg);
-// Be polite and say hello
-char hello[13] = "hello world!";
 
 // encoder pulses publisher
 std_msgs::Int32 encoderLeftPulsesPub;
@@ -112,18 +102,26 @@ void encoderPub() {
 float steering_angle = 0;
 float velocity_target = 0;
 
+
+float twist_angular = 0;
+float twist_linear = 0;
+
 long unsigned int secondTimer = 0;
+long unsigned int loopInfoTimer = 0;
 
 void twistMsgCb(const geometry_msgs::Twist& msg) {
 	
 	int encoderPulsesTarget = 0;
 
 	velocity_target = msg.linear.x;
+	twist_linear = msg.linear.x;
+	twist_angular = msg.angular.z;
+
 	if(velocity_target == 0 || msg.angular.z == 0) {
 		steering_angle = 0;
 	} else {
 		float radius = velocity_target / msg.angular.z;
-		steering_angle = atan(0.15 / radius);
+		steering_angle = atan(wheelbase / radius);
 	}
 
 	// dx = (l + r) / 2
@@ -131,8 +129,21 @@ void twistMsgCb(const geometry_msgs::Twist& msg) {
 	//float speed_wish_right = (cmd_vel.angle*WHEEL_DIST)/2 + cmd_vel.speed;
 	//float speed_wish_left = velocity_target * 2 - speed_wish_right;
 
-	leftSpeedPidSetPointTmp = velocity_target * 2 - (msg.angular.z * wheelbase ) / 2 + velocity_target;
+	leftSpeedPidSetPointTmp = velocity_target * 2 - ((msg.angular.z * wheelbase ) / 2 + velocity_target);
+
+	/*
+	Serial.print(leftSpeedPidSetPointTmp);
+	Serial.print("\t");
+	*/
+
 	leftSpeedPidSetPointTmp = (leftSpeedPidSetPointTmp * ppm) / SPEED_PID_SAMPLE_FREQ;
+
+	leftSpeedPidSetPointTmp = -leftSpeedPidSetPointTmp;
+
+	/*
+	Serial.print(leftSpeedPidSetPointTmp);
+	Serial.println("\n");
+	*/
 
 	// pid
 	//leftSpeedPidSetPointTmp = velocity_target;
@@ -178,16 +189,13 @@ void twistMsgCb(const geometry_msgs::Twist& msg) {
 }
 
 ros::Subscriber<geometry_msgs::Twist> cmdVelSubscribe("cmd_vel", &twistMsgCb);
-
 // eof:ROS
-
-
 
 boolean leftSpeedPidCompute() {
   boolean pidResult;
 
   leftSpeedPidInput = abs(encoderLeftPulsesSpeedPID);
-
+/*
   if(abs(leftSpeedPidInput - leftSpeedPidSetPoint) > SPEED_PID_ADAPTATIVE_LIMIT2) {
     //Serial.println("agressive LEFT");
     leftSpeedPid.SetTunings(leftSpeedPidKp2, leftSpeedPidKi2, leftSpeedPidKd2);
@@ -198,7 +206,7 @@ boolean leftSpeedPidCompute() {
     //Serial.println("nice LEFT");
     leftSpeedPid.SetTunings(leftSpeedPidKp0, leftSpeedPidKi0, leftSpeedPidKd0);
   }
-  
+*/  
   pidResult = leftSpeedPid.Compute(); 
   if(pidResult) {
     encoderLeftPulsesSpeedPID = 0;
@@ -209,45 +217,119 @@ boolean leftSpeedPidCompute() {
   return pidResult;
 }
 
-
-
-
-boolean leftSpeedPidCompute1() {
-  boolean pidResult;
-
-  //if(useSteeringPid) {
-  //  //Serial.println("useSteeringPid LEFT");
-  //  leftSpeedPidInput = abs(encoderLeftPulsesSpeedPID) + (abs(encoderLeftPulsesSpeedPID) * steeringPidOutput / 100);
-  //} else {
-    leftSpeedPidInput = abs(encoderLeftPulsesSpeedPID);
-  //}
-
-  if(abs(leftSpeedPidInput - leftSpeedPidSetPoint) > SPEED_PID_ADAPTATIVE_LIMIT2) {
-    //Serial.println("agressive LEFT");
-    leftSpeedPid.SetTunings(leftSpeedPidKp2, leftSpeedPidKi2, leftSpeedPidKd2);
-  } else if(abs(leftSpeedPidInput - leftSpeedPidSetPoint) > SPEED_PID_ADAPTATIVE_LIMIT1) {
-    //Serial.println("medium LEFT");
-    leftSpeedPid.SetTunings(leftSpeedPidKp1, leftSpeedPidKi1, leftSpeedPidKd1);
-  } else {
-    //Serial.println("nice LEFT");
-    leftSpeedPid.SetTunings(leftSpeedPidKp0, leftSpeedPidKi0, leftSpeedPidKd0);
-  }
-  
-  pidResult = leftSpeedPid.Compute(); 
-  if(pidResult) {
-    encoderLeftPulsesSpeedPID = 0;
-    leftSpeedPidInputLast = leftSpeedPidInput;
-  }
-  return pidResult;
-}
-
 void update_PID() {
   // calculate speedPid
   leftSpeedPidResult = leftSpeedPidCompute();
 
   if(leftSpeedPidSetPoint) {
-	  // show something to debug
+	// show something to debug
+	
+	/*
+	Serial.print(leftSpeedPidSetPoint);
+	Serial.print("\t");
+	Serial.print(leftSpeedPidInputLast);
+	Serial.println("\n");
+	*/
+/*
+	Serial.print(steering_angle);
+	Serial.print("\t");
+	Serial.print(velocity_target);
+	Serial.print("\t");
+	Serial.print(speedOs);
+	Serial.print("\t");
+	Serial.print(speed);
+	Serial.print("\t");
+	
+	Serial.print(leftSpeedPidSetPoint);
+	Serial.print("\t");
+	Serial.print(leftSpeedPidInputLast);
+	Serial.print("\t");
+	
+	Serial.print(encoderLeftPulses);
+	Serial.print("\t");
+	Serial.print(leftMotorPwmOut);
+	Serial.print("\t");
+	Serial.print(motorState);
+	Serial.print("\t");
+	Serial.println(servo1Angle);
+*/	
   }
+}
+
+/*
+IRAM_ATTR void encoderLeftCounterA() {
+  // look for a low-to-high on channel A
+  if (digitalRead(ENCODER_LEFT_PINA) == HIGH) {
+    // check channel B to see which way encoder is turning
+    if (digitalRead(ENCODER_LEFT_PINB) == LOW) {
+      encoderLeftPulses = encoderLeftPulses + 1;         // CW
+      // pid
+      encoderLeftPulsesSpeedPID++;
+      encoderLeftPulsesSteeringPID++;
+    } else {
+      encoderLeftPulses = encoderLeftPulses - 1;         // CCW
+      // pid
+      encoderLeftPulsesSpeedPID--;
+      encoderLeftPulsesSteeringPID--;
+    }
+  } else {
+    // its low-to-high-to-low on channel A
+    // check channel B to see which way encoder is turning
+    if (digitalRead(ENCODER_LEFT_PINB) == HIGH) {
+      encoderLeftPulses = encoderLeftPulses + 1;          // CW
+      // pid
+      encoderLeftPulsesSpeedPID++;
+      encoderLeftPulsesSteeringPID++;
+    } else {
+      encoderLeftPulses = encoderLeftPulses - 1;          // CCW
+      // pid
+      encoderLeftPulsesSpeedPID--;
+      encoderLeftPulsesSteeringPID--;
+    }
+  }
+}
+
+IRAM_ATTR void encoderLeftCounterB() {
+  // look for a low-to-high on channel B
+  if (digitalRead(ENCODER_LEFT_PINB) == HIGH) {
+
+    // check channel A to see which way encoder is turning
+    if (digitalRead(ENCODER_LEFT_PINA) == HIGH) {
+      encoderLeftPulses = encoderLeftPulses + 1;         // CW
+      encoderLeftPulsesSpeedPID++;
+      encoderLeftPulsesSteeringPID++;
+    }
+    else {
+      encoderLeftPulses = encoderLeftPulses - 1;         // CCW
+      encoderLeftPulsesSpeedPID--;
+      encoderLeftPulsesSteeringPID--;
+    }
+  }
+
+  // Look for a high-to-low on channel B
+  else {
+    // check channel B to see which way encoder is turning
+    if (digitalRead(ENCODER_LEFT_PINA) == LOW) {
+      encoderLeftPulses = encoderLeftPulses + 1;          // CW
+      encoderLeftPulsesSpeedPID++;
+      encoderLeftPulsesSteeringPID++;
+    }
+    else {
+      encoderLeftPulses = encoderLeftPulses - 1;          // CCW
+      encoderLeftPulsesSpeedPID--;
+      encoderLeftPulsesSteeringPID--;
+    }
+  }
+}
+*/
+
+void motorGoFront(int speed) {
+	if(motorState != 1) {
+		digitalWrite(IN1, LOW);
+		digitalWrite(IN2, HIGH);
+		motorState = 1;
+	}
+	analogWrite(ENA, speed);
 }
 
 IRAM_ATTR void encoderLeftCounterA() {
@@ -315,14 +397,6 @@ IRAM_ATTR void encoderLeftCounterB() {
   }
 }
 
-void motorGoFront(int speed) {
-	if(motorState != 1) {
-		digitalWrite(IN1, LOW);
-		digitalWrite(IN2, HIGH);
-		motorState = 1;
-	}
-	analogWrite(ENA, speed);
-}
 
 void motorGoBack(int speed) {
 	if(motorState != -1) {
@@ -342,6 +416,17 @@ void motorStop() {
 	}
 }
 
+void bodyMotorsControl() {
+  // set motor left direction & speed
+  if(leftMotorPwmOut == 0) {
+	motorStop();
+  } else if(leftMotorPwmOut > 0) {
+    motorGoFront(leftMotorPwmOut);
+  } else {
+    motorGoBack(abs(leftMotorPwmOut));  
+  }
+}
+
 void blinkLED() {
 	static boolean ledstate = 0;
 	static long unsigned int ledTimer = 0;
@@ -354,38 +439,40 @@ void blinkLED() {
 
 void setup() {
 
+	Serial.begin(115200);
+	Serial.println("Booting");
+
 	pinMode(LED_BUILTIN, OUTPUT);
-	
+
+	// motor settings	
 	pinMode(ENA, OUTPUT);
 	pinMode(IN1, OUTPUT);
 	pinMode(IN2, OUTPUT);
 	analogWriteRange(PWMRANGE);
 	analogWriteFreq(PWMFREQ);
 
+	// stop motors
 	analogWrite(ENA, 0);
 	digitalWrite(IN1, LOW);
 	digitalWrite(IN2, LOW);
 	motorState = 0;
 
-
+	// encoder & odometry settings
 	// meters per wheel rotation
 	mpr = (2 * PI * wheelradius);
-	
 	// pulses per meter
 	ppm = ppr / mpr;
-	
 	// meters per pulse
 	mpp = 1.0 / ppm;
 
-
-
-	Serial.begin(115200);
-	Serial.println("Booting");
-
+	Serial.print("\neters per rotation: ");
 	Serial.println(mpr, 6);
+	Serial.print("\neters per pulse: ");
 	Serial.println(mpp, 6);
+	Serial.print("\npulses per meter: ");
 	Serial.println(ppm);
 
+	// WiFi
 	WiFi.mode(WIFI_STA);
 	WiFi.begin(ssid, password);
 
@@ -472,8 +559,6 @@ void setup() {
 
 	nh.subscribe(cmdVelSubscribe);
 	nh.advertise(encoderPublisher);
-	// Start to be polite
-	nh.advertise(chatter);
 	// eof:ROS
 
 	// left speed PID
@@ -484,145 +569,82 @@ void setup() {
 	leftSpeedPid.SetSampleTime(SPEED_PID_SAMPLE_TIME); 
 	leftSpeedPid.SetOutputLimits(LEFT_SPEED_PID_MIN_OUTPUT, LEFT_SPEED_PID_MAX_OUTPUT);
 
-
-}
-
-void bodyMotorsControl() {
-
-  // brake control vars
-  static bool leftBrake = false;
-
-	Serial.print(leftMotorPwmOut);
-
-  // set motor left direction & speed
-  if(leftMotorPwmOut == 0) {
-	  Serial.println("\tstop");
-    if(!leftBrake) {
-      motorStop();            
-    } else {
-      motorStop();
-    }
-    
-  } else if(leftMotorPwmOut > 0) {
-	  Serial.println("\tfront");
-    motorGoFront(leftMotorPwmOut);
-  } else {
-	  Serial.println("\tback");
-    motorGoBack(abs(leftMotorPwmOut));  
-  }
-
 }
 
 void loop() {
 	ArduinoOTA.handle();
 
-	servo1PotRead = analogRead(servo1PotPin); // reads the value of the potentiometer (value between 0 and 1023)
-	//servo1Angle = map(servo1PotRead, 0, 1023, 35, 145);  // scale it to use it with the servo (value between 0 and 180)
-
-	servo1.write(servo1Angle);	
-	delay(50);
-
-	//motorSpeed = map(servo1PotRead, 0, 1023, -200, 200);  // scale it to use it with the brige-h pwm
-	servo1Angle = map(steering_angle*100, -143, 143, 35, 145);  // scale it to use it with the servo (value between 0 and 180)
-	servo1.write(servo1Angle);	
-	delay(10);
-
-/*
-	if(motorSpeed > 10) {
-		motorGoFront(abs(motorSpeed));
-	} else if(motorSpeed < -10) {
-		motorGoBack(abs(motorSpeed));
-	} else {
-		motorStop();
-	}
-*/
-	//testTwo();
+	servo1Angle = map(steering_angle*100, -60, 60, 45, 135);  // scale it to use it with the servo (value between 0 and 180)
 	
+	if(servo1Angle < 45) servo1Angle = 45;
+	if(servo1Angle > 135) servo1Angle = 135;
+
+	if(abs(twist_angular) > 0.05) {
+		if(twist_linear > 0) {
+			servo1.write(servo1Angle);
+		}
+	}
+	//delay(10);
+
 	blinkLED();
 
 	encoderPub();
 	nh.spinOnce();
 
-/*
-	// bof:ROS
-	if (nh.connected()) {
-		Serial.println("Connected");
-		// Say hello
-		str_msg.data = hello;
-		chatter.publish( &str_msg );
-	} else {
-		Serial.println("Not Connected");
+	static double encoderLeftPulsesLast = 999;
+	
+	if(encoderLeftPulses != encoderLeftPulsesLast) {
+		if(encoderLeftPulses != encoderLeftPulsesLast) encoderLeftPulsesLast = encoderLeftPulses;
 	}
-	nh.spinOnce();
-	// Loop exproximativly at 1Hz
-	//delay(1000);
-	delay(100);
-	// eof:ROS
-*/
 
+	// check encoder targets
+	if(encoderPulsesTargetEnabled) {
+		//
+		// check left encoder target
+		if(!encoderLeftPulsesOnTarget) {
+		if(leftSpeedPidSetPointDirection >= 0) {
+			//Serial.print("LP>: "); Serial.println(encoderLeftPulses);
+			if(encoderLeftPulses >= encoderLeftPulsesTarget - encoderLeftPulsesTargetStopOffset) {
+			encoderLeftPulsesOnTarget = true;  
+			}
+		} else {
+			//Serial.print("LP<: "); Serial.println(encoderLeftPulses);
+			if(encoderLeftPulses < encoderLeftPulsesTarget + encoderLeftPulsesTargetStopOffset) {
+			encoderLeftPulsesOnTarget = true;
+			}      
+		}
+		// left stop on encoder target
+		if(encoderLeftPulsesOnTarget) {
+			//Serial.println("L ON TARGET");
+			leftMotorPwmOut = 0;
+			leftSpeedPidSetPoint = 0;
+			leftSpeedPidSetPointDirection = 0; 
+		}
+		}
+		
+		//
+		// encoders on target
+		if(encoderLeftPulsesOnTarget) {
+		//Serial.println("BOTH ON TARGET");
 
-
-  static double encoderLeftPulsesLast = 999;
-  
-  if(encoderLeftPulses != encoderLeftPulsesLast) {
-    if(encoderLeftPulses != encoderLeftPulsesLast) encoderLeftPulsesLast = encoderLeftPulses;
-    //Serial.print(encoderLeftPulses); Serial.print("\t"); Serial.print(encoderRightPulses); Serial.println("\t");
-    //Serial.print(leftMotorPwmOut); Serial.print("\t"); Serial.print(rightMotorPwmOut); Serial.print("\t"); Serial.print(encoderLeftPulses); Serial.print("\t"); Serial.print(encoderRightPulses); Serial.println("\t");
-  }
-
-  // check encoder targets
-  if(encoderPulsesTargetEnabled) {
-    //Serial.print("CKENC: "); Serial.print(leftSpeedPidSetPointDirection); Serial.print("\t"); Serial.print(rightSpeedPidSetPointDirection); Serial.print("\t"); 
-    //Serial.print(encoderLeftPulses);Serial.print("\t"); Serial.print(encoderLeftPulsesTarget); Serial.print("\t"); 
-    //Serial.print(encoderRightPulses);Serial.print("\t"); Serial.print(encoderRightPulsesTarget); Serial.println();
-    //
-    // check left encoder target
-    //
-    if(!encoderLeftPulsesOnTarget) {
-      if(leftSpeedPidSetPointDirection >= 0) {
-        //Serial.print("LP>: "); Serial.println(encoderLeftPulses);
-        if(encoderLeftPulses >= encoderLeftPulsesTarget - encoderLeftPulsesTargetStopOffset) {
-          encoderLeftPulsesOnTarget = true;  
-        }
-      } else {
-        //Serial.print("LP<: "); Serial.println(encoderLeftPulses);
-        if(encoderLeftPulses < encoderLeftPulsesTarget + encoderLeftPulsesTargetStopOffset) {
-          encoderLeftPulsesOnTarget = true;
-        }      
-      }
-      // left stop on encoder target
-      if(encoderLeftPulsesOnTarget) {
-        //Serial.println("L ON TARGET");
-        leftMotorPwmOut = 0;
-        leftSpeedPidSetPoint = 0;
-        leftSpeedPidSetPointDirection = 0; 
-      }
-    }
-    
-    //
-    // encoders on target
-    //
-    if(encoderLeftPulsesOnTarget) {
-      //Serial.println("BOTH ON TARGET");
-
-      encoderLeftPulsesTargetStart = 0;
-      encoderLeftPulsesTarget = 0;
-      encoderLeftPulsesOnTarget = false;
-      encoderPulsesTargetEnabled = false;
-    }
-  }
-  
-  // set speed  
-//  if(setPwmStatus) {    
-//    leftMotorPwmOut = leftMotorPwmOutCmd;
-//    setPwmStatus = false;
-//  } else {
+		encoderLeftPulsesTargetStart = 0;
+		encoderLeftPulsesTarget = 0;
+		encoderLeftPulsesOnTarget = false;
+		encoderPulsesTargetEnabled = false;
+		}
+	}
+	
+  	// set speed  
+	// if(setPwmStatus) {    
+	// 	leftMotorPwmOut = leftMotorPwmOutCmd;
+	//  setPwmStatus = false;
+	// } else {
     leftMotorPwmOut = 0;
     if(leftSpeedPidSetPoint != 0) {
       leftMotorPwmOut = leftSpeedPidOutput * leftSpeedPidSetPointDirection; // - steeringPidOutput;
     }
-//
-//  }
+	//
+	//  }
   
   	update_PID();
 
@@ -634,23 +656,37 @@ void loop() {
 		speedOsLastPulses = encoderLeftPulses;
 	}
 
-	Serial.print(steering_angle);
-	Serial.print("\t");
-	Serial.print(velocity_target);
-	Serial.print("\t");
-	Serial.print(speedOs);
-	Serial.print("\t");
-	Serial.print(speed);
-	Serial.print("\t");
-	Serial.print(leftSpeedPidSetPoint);
-	Serial.print("\t");
-	Serial.print(leftSpeedPidInputLast);
-	Serial.print("\t");
-	Serial.print(encoderLeftPulses);
-	Serial.print("\t");
-	Serial.print(leftMotorPwmOut);
-	Serial.print("\t");
-	Serial.print(motorState);
-	Serial.print("\t");
-	Serial.println(servo1Angle);
+	if(millis() >= loopInfoTimer) {
+		loopInfoTimer = millis() + 50;
+		
+		Serial.print(twist_angular);
+		Serial.print("\t");
+		Serial.print(steering_angle);
+		Serial.print("\t");
+		Serial.print(servo1Angle);
+		Serial.print(" | \t");
+		Serial.print(twist_linear);
+		Serial.print("\t");
+		Serial.print(velocity_target);
+		Serial.print(" | \t");
+		Serial.print(speedOs);
+		Serial.print("\t");
+		Serial.print(speed);
+		Serial.print("\t");
+		Serial.print(leftSpeedPidSetPoint);
+		Serial.print("\t");
+		Serial.print(leftSpeedPidInputLast);
+		Serial.print("\t");
+		Serial.print(encoderLeftPulses);
+		Serial.print("\t");
+		Serial.print(leftMotorPwmOut);
+		Serial.print("\t");
+		Serial.println(motorState);
+		
+	}
+
+	// prove of life & ros comms
+	blinkLED();
+	nh.spinOnce();
+
 }
