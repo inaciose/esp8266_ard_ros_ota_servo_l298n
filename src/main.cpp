@@ -76,10 +76,11 @@ int speedOsLastPulses = 0;
 // bof:ROS
 #include <ros.h>
 #include <std_msgs/Int32.h>
+#include <std_msgs/String.h>
 #include <geometry_msgs/Twist.h>
 
 // Set the rosserial socket server IP address
-IPAddress server(192,168,1,112);
+IPAddress server(192,168,1,64);
 // Set the rosserial socket server port
 const uint16_t serverPort = 11411;
 
@@ -90,6 +91,11 @@ std_msgs::Int32 encoderLeftPulsesPub;
 ros::Publisher encoderPublisher("wheel", &encoderLeftPulsesPub);
 #define ENCODER_PUB_TIMER 500
 
+// mcu ip publisher
+std_msgs::String ip_msg;
+ros::Publisher ipPublisher("mcu_ip", &ip_msg);
+#define IP_PUB_TIMER 10000
+
 void encoderPub() {
 	static long unsigned int encoderPubTimer = 0;
 	if(millis() >= encoderPubTimer) {
@@ -99,9 +105,17 @@ void encoderPub() {
 	}
 }
 
+void ipPub() {
+	static long unsigned int ipPubTimer = 0;
+	if(millis() >= ipPubTimer) {
+		ipPubTimer = millis() + IP_PUB_TIMER;
+		ip_msg.data = WiFi.localIP().toString().c_str();
+		ipPublisher.publish( &ip_msg );
+	}
+}
+
 float steering_angle = 0;
 float velocity_target = 0;
-
 
 float twist_angular = 0;
 float twist_linear = 0;
@@ -123,6 +137,8 @@ void twistMsgCb(const geometry_msgs::Twist& msg) {
 		float radius = velocity_target / msg.angular.z;
 		steering_angle = atan(wheelbase / radius);
 	}
+
+	steering_angle = -steering_angle;
 
 	// dx = (l + r) / 2
 	// dr = (r - l) / w
@@ -191,22 +207,112 @@ void twistMsgCb(const geometry_msgs::Twist& msg) {
 ros::Subscriber<geometry_msgs::Twist> cmdVelSubscribe("cmd_vel", &twistMsgCb);
 // eof:ROS
 
+IRAM_ATTR void encoderLeftCounterA() {
+  // look for a low-to-high on channel A
+  if (digitalRead(ENCODER_LEFT_PINA) == HIGH) {
+    // check channel B to see which way encoder is turning
+    if (digitalRead(ENCODER_LEFT_PINB) == LOW) {
+      encoderLeftPulses = encoderLeftPulses - 1;         // CW
+      // pid
+      encoderLeftPulsesSpeedPID--;
+      encoderLeftPulsesSteeringPID--;
+    } else {
+      encoderLeftPulses = encoderLeftPulses + 1;         // CCW
+      // pid
+      encoderLeftPulsesSpeedPID++;
+      encoderLeftPulsesSteeringPID++;
+    }
+  } else {
+    // its low-to-high-to-low on channel A
+    // check channel B to see which way encoder is turning
+    if (digitalRead(ENCODER_LEFT_PINB) == HIGH) {
+      encoderLeftPulses = encoderLeftPulses - 1;          // CW
+      // pid
+      encoderLeftPulsesSpeedPID--;
+      encoderLeftPulsesSteeringPID--;
+    } else {
+      encoderLeftPulses = encoderLeftPulses + 1;          // CCW
+      // pid
+      encoderLeftPulsesSpeedPID++;
+      encoderLeftPulsesSteeringPID++;
+    }
+  }
+}
+
+IRAM_ATTR void encoderLeftCounterB() {
+  // look for a low-to-high on channel B
+  if (digitalRead(ENCODER_LEFT_PINB) == HIGH) {
+
+    // check channel A to see which way encoder is turning
+    if (digitalRead(ENCODER_LEFT_PINA) == HIGH) {
+      encoderLeftPulses = encoderLeftPulses - 1;         // CW
+      encoderLeftPulsesSpeedPID--;
+      encoderLeftPulsesSteeringPID--;
+    }
+    else {
+      encoderLeftPulses = encoderLeftPulses + 1;         // CCW
+      encoderLeftPulsesSpeedPID++;
+      encoderLeftPulsesSteeringPID++;
+    }
+  }
+
+  // Look for a high-to-low on channel B
+  else {
+    // check channel B to see which way encoder is turning
+    if (digitalRead(ENCODER_LEFT_PINA) == LOW) {
+      encoderLeftPulses = encoderLeftPulses - 1;          // CW
+      encoderLeftPulsesSpeedPID--;
+      encoderLeftPulsesSteeringPID--;
+    }
+    else {
+      encoderLeftPulses = encoderLeftPulses + 1;          // CCW
+      encoderLeftPulsesSpeedPID++;
+      encoderLeftPulsesSteeringPID++;
+    }
+  }
+}
+
+void motorGoFront(int speed) {
+	if(motorState != 1) {
+		digitalWrite(IN1, LOW);
+		digitalWrite(IN2, HIGH);
+		motorState = 1;
+	}
+	analogWrite(ENA, speed);
+}
+
+void motorGoBack(int speed) {
+	if(motorState != -1) {
+		digitalWrite(IN1, HIGH);
+		digitalWrite(IN2, LOW);
+		motorState = -1;
+	}
+	analogWrite(ENA, speed);
+}
+
+void motorStop() {
+	if(motorState != 0) {
+		analogWrite(ENA, 0);
+		digitalWrite(IN1, LOW);
+		digitalWrite(IN2, LOW);
+		motorState = 0;
+	}
+}
+
+void bodyMotorsControl() {
+  // set motor left direction & speed
+  if(leftMotorPwmOut == 0) {
+	motorStop();
+  } else if(leftMotorPwmOut > 0) {
+    motorGoFront(leftMotorPwmOut);
+  } else {
+    motorGoBack(abs(leftMotorPwmOut));  
+  }
+}
+
 boolean leftSpeedPidCompute() {
   boolean pidResult;
-
   leftSpeedPidInput = abs(encoderLeftPulsesSpeedPID);
-/*
-  if(abs(leftSpeedPidInput - leftSpeedPidSetPoint) > SPEED_PID_ADAPTATIVE_LIMIT2) {
-    //Serial.println("agressive LEFT");
-    leftSpeedPid.SetTunings(leftSpeedPidKp2, leftSpeedPidKi2, leftSpeedPidKd2);
-  } else if(abs(leftSpeedPidInput - leftSpeedPidSetPoint) > SPEED_PID_ADAPTATIVE_LIMIT1) {
-    //Serial.println("medium LEFT");
-    leftSpeedPid.SetTunings(leftSpeedPidKp1, leftSpeedPidKi1, leftSpeedPidKd1);
-  } else {
-    //Serial.println("nice LEFT");
-    leftSpeedPid.SetTunings(leftSpeedPidKp0, leftSpeedPidKi0, leftSpeedPidKd0);
-  }
-*/  
   pidResult = leftSpeedPid.Compute(); 
   if(pidResult) {
     encoderLeftPulsesSpeedPID = 0;
@@ -256,177 +362,6 @@ void update_PID() {
   }
 }
 
-/*
-IRAM_ATTR void encoderLeftCounterA() {
-  // look for a low-to-high on channel A
-  if (digitalRead(ENCODER_LEFT_PINA) == HIGH) {
-    // check channel B to see which way encoder is turning
-    if (digitalRead(ENCODER_LEFT_PINB) == LOW) {
-      encoderLeftPulses = encoderLeftPulses + 1;         // CW
-      // pid
-      encoderLeftPulsesSpeedPID++;
-      encoderLeftPulsesSteeringPID++;
-    } else {
-      encoderLeftPulses = encoderLeftPulses - 1;         // CCW
-      // pid
-      encoderLeftPulsesSpeedPID--;
-      encoderLeftPulsesSteeringPID--;
-    }
-  } else {
-    // its low-to-high-to-low on channel A
-    // check channel B to see which way encoder is turning
-    if (digitalRead(ENCODER_LEFT_PINB) == HIGH) {
-      encoderLeftPulses = encoderLeftPulses + 1;          // CW
-      // pid
-      encoderLeftPulsesSpeedPID++;
-      encoderLeftPulsesSteeringPID++;
-    } else {
-      encoderLeftPulses = encoderLeftPulses - 1;          // CCW
-      // pid
-      encoderLeftPulsesSpeedPID--;
-      encoderLeftPulsesSteeringPID--;
-    }
-  }
-}
-
-IRAM_ATTR void encoderLeftCounterB() {
-  // look for a low-to-high on channel B
-  if (digitalRead(ENCODER_LEFT_PINB) == HIGH) {
-
-    // check channel A to see which way encoder is turning
-    if (digitalRead(ENCODER_LEFT_PINA) == HIGH) {
-      encoderLeftPulses = encoderLeftPulses + 1;         // CW
-      encoderLeftPulsesSpeedPID++;
-      encoderLeftPulsesSteeringPID++;
-    }
-    else {
-      encoderLeftPulses = encoderLeftPulses - 1;         // CCW
-      encoderLeftPulsesSpeedPID--;
-      encoderLeftPulsesSteeringPID--;
-    }
-  }
-
-  // Look for a high-to-low on channel B
-  else {
-    // check channel B to see which way encoder is turning
-    if (digitalRead(ENCODER_LEFT_PINA) == LOW) {
-      encoderLeftPulses = encoderLeftPulses + 1;          // CW
-      encoderLeftPulsesSpeedPID++;
-      encoderLeftPulsesSteeringPID++;
-    }
-    else {
-      encoderLeftPulses = encoderLeftPulses - 1;          // CCW
-      encoderLeftPulsesSpeedPID--;
-      encoderLeftPulsesSteeringPID--;
-    }
-  }
-}
-*/
-
-void motorGoFront(int speed) {
-	if(motorState != 1) {
-		digitalWrite(IN1, LOW);
-		digitalWrite(IN2, HIGH);
-		motorState = 1;
-	}
-	analogWrite(ENA, speed);
-}
-
-IRAM_ATTR void encoderLeftCounterA() {
-  // look for a low-to-high on channel A
-  if (digitalRead(ENCODER_LEFT_PINA) == HIGH) {
-    // check channel B to see which way encoder is turning
-    if (digitalRead(ENCODER_LEFT_PINB) == LOW) {
-      encoderLeftPulses = encoderLeftPulses - 1;         // CW
-      // pid
-      encoderLeftPulsesSpeedPID--;
-      encoderLeftPulsesSteeringPID--;
-    } else {
-      encoderLeftPulses = encoderLeftPulses + 1;         // CCW
-      // pid
-      encoderLeftPulsesSpeedPID++;
-      encoderLeftPulsesSteeringPID++;
-    }
-  } else {
-    // its low-to-high-to-low on channel A
-    // check channel B to see which way encoder is turning
-    if (digitalRead(ENCODER_LEFT_PINB) == HIGH) {
-      encoderLeftPulses = encoderLeftPulses - 1;          // CW
-      // pid
-      encoderLeftPulsesSpeedPID--;
-      encoderLeftPulsesSteeringPID--;
-    } else {
-      encoderLeftPulses = encoderLeftPulses + 1;          // CCW
-      // pid
-      encoderLeftPulsesSpeedPID++;
-      encoderLeftPulsesSteeringPID++;
-    }
-  }
-}
-
-IRAM_ATTR void encoderLeftCounterB() {
-  // look for a low-to-high on channel B
-  if (digitalRead(ENCODER_LEFT_PINB) == HIGH) {
-
-    // check channel A to see which way encoder is turning
-    if (digitalRead(ENCODER_LEFT_PINA) == HIGH) {
-      encoderLeftPulses = encoderLeftPulses - 1;         // CW
-      encoderLeftPulsesSpeedPID--;
-      encoderLeftPulsesSteeringPID--;
-    }
-    else {
-      encoderLeftPulses = encoderLeftPulses + 1;         // CCW
-      encoderLeftPulsesSpeedPID++;
-      encoderLeftPulsesSteeringPID++;
-    }
-  }
-
-  // Look for a high-to-low on channel B
-  else {
-    // check channel B to see which way encoder is turning
-    if (digitalRead(ENCODER_LEFT_PINA) == LOW) {
-      encoderLeftPulses = encoderLeftPulses - 1;          // CW
-      encoderLeftPulsesSpeedPID--;
-      encoderLeftPulsesSteeringPID--;
-    }
-    else {
-      encoderLeftPulses = encoderLeftPulses + 1;          // CCW
-      encoderLeftPulsesSpeedPID++;
-      encoderLeftPulsesSteeringPID++;
-    }
-  }
-}
-
-
-void motorGoBack(int speed) {
-	if(motorState != -1) {
-		digitalWrite(IN1, HIGH);
-		digitalWrite(IN2, LOW);
-		motorState = -1;
-	}
-	analogWrite(ENA, speed);
-}
-
-void motorStop() {
-	if(motorState != 0) {
-		analogWrite(ENA, 0);
-		digitalWrite(IN1, LOW);
-		digitalWrite(IN2, LOW);
-		motorState = 0;
-	}
-}
-
-void bodyMotorsControl() {
-  // set motor left direction & speed
-  if(leftMotorPwmOut == 0) {
-	motorStop();
-  } else if(leftMotorPwmOut > 0) {
-    motorGoFront(leftMotorPwmOut);
-  } else {
-    motorGoBack(abs(leftMotorPwmOut));  
-  }
-}
-
 void blinkLED() {
 	static boolean ledstate = 0;
 	static long unsigned int ledTimer = 0;
@@ -440,7 +375,7 @@ void blinkLED() {
 void setup() {
 
 	Serial.begin(115200);
-	Serial.println("Booting");
+	Serial.println("Booting...");
 
 	pinMode(LED_BUILTIN, OUTPUT);
 
@@ -465,14 +400,22 @@ void setup() {
 	// meters per pulse
 	mpp = 1.0 / ppm;
 
-	Serial.print("\neters per rotation: ");
+	Serial.print("wheelbase: ");
+	Serial.println(wheelbase, 3);
+	Serial.print("wheelradius: ");
+	Serial.println(wheelradius, 3);
+
+	Serial.print("pulses per rotation: ");
+	Serial.println(ppr, 6);
+	Serial.print("meters per rotation: ");
 	Serial.println(mpr, 6);
-	Serial.print("\neters per pulse: ");
+	Serial.print("meters per pulse: ");
 	Serial.println(mpp, 6);
-	Serial.print("\npulses per meter: ");
+	Serial.print("pulses per meter: ");
 	Serial.println(ppm);
 
 	// WiFi
+	Serial.println("WiFi connecting...");
 	WiFi.mode(WIFI_STA);
 	WiFi.begin(ssid, password);
 
@@ -539,7 +482,7 @@ void setup() {
 
 	// servo
 	servo1.attach(12); //D6
-	servo1.write(90);
+	servo1.write(90 - 16);
 
 	// encoders
 	encoderLeftDirection = false; 
@@ -554,11 +497,15 @@ void setup() {
 	nh.initNode();
 
 	// Another way to get IP
-	Serial.print("IP = ");
+	Serial.print("ROS IP = ");
 	Serial.println(nh.getHardware()->getLocalIP());
 
 	nh.subscribe(cmdVelSubscribe);
 	nh.advertise(encoderPublisher);
+	nh.advertise(ipPublisher);
+
+	ipPub();
+
 	// eof:ROS
 
 	// left speed PID
@@ -574,21 +521,24 @@ void setup() {
 void loop() {
 	ArduinoOTA.handle();
 
-	servo1Angle = map(steering_angle*100, -60, 60, 45, 135);  // scale it to use it with the servo (value between 0 and 180)
+	servo1Angle = map(steering_angle*100, -90, 90, 30, 150);  // scale it to use it with the servo (value between 0 and 180)
 	
-	if(servo1Angle < 45) servo1Angle = 45;
+	servo1Angle -= 16; // go straight compensation
+
+	if(servo1Angle < 30) servo1Angle = 30;
 	if(servo1Angle > 135) servo1Angle = 135;
 
-	if(abs(twist_angular) > 0.05) {
-		if(twist_linear > 0) {
-			servo1.write(servo1Angle);
-		}
+	if(twist_linear == 0 || twist_linear > 0.05) {
+		servo1.write(servo1Angle);
 	}
+	
 	//delay(10);
 
 	blinkLED();
 
 	encoderPub();
+	ipPub();
+
 	nh.spinOnce();
 
 	static double encoderLeftPulsesLast = 999;
